@@ -1,0 +1,16 @@
+{
+  "name": "ai-migraine-tracker",
+  "version": "0.1.0",
+  "description": "Local‑first, offline‑capable migraine tracker PWA with simple AI insights.",
+  "private": true,
+  "scripts": {
+    "dev": "npx http-server -c-1 -p 3000",
+    "test": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vitest": "^0.34.2",
+    "playwright": "^1.38.0"
+  }
+}
