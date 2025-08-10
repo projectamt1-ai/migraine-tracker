@@ -1,10 +1,10 @@
 {
   "name": "AI Migraine Tracker",
   "short_name": "Migraine",
-  "description": "Local‑first, offline‑capable migraine tracker with simple AI insights",
+  "description": "Local-first, offline-capable migraine tracker with simple AI insights",
   "icons": [
     {
-      "src": "./assens/icon-192.png",
+    x  "src": "./assets/icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
