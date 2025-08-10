@@ -1,73 +1,88 @@
 /* patterns.js
- *
- * Implements simple rule‑based heuristics to surface behavioural patterns
+ * Implements simple rule-based heuristics to surface behavioural patterns
  * in the user's migraine episodes. No machine learning is used – instead
- * we compute statistics over recent episodes and return gentle
- * suggestions.  See README for description of the rules.
+ * we compute statistics over recent episodes and return gentle suggestions.
  */
 
-/**
- * Given a list of Episode objects, compute suggestions according to
- * various heuristics.
- * Each suggestion is an object with `title` and `message` fields.
- *
- * @param {Episode[]} episodes
- * @returns {{title:string,message:string}[]}
- */
 export function analysePatterns(episodes) {
   const suggestions = [];
   if (!Array.isArray(episodes) || episodes.length === 0) return suggestions;
   const now = new Date();
 
-  // Helper: filter episodes within last N days
   function inLastDays(days) {
     const cutoff = new Date(now);
     cutoff.setDate(cutoff.getDate() - days);
     return episodes.filter(ep => new Date(ep.datetime) >= cutoff);
   }
 
-  // Top triggers rule: any trigger present in >=25% of last‑30‑day episodes
+  function capitalize(s) {
+    return !s ? '' : s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  function computeStreak(eps) {
+    if (eps.length === 0) return 0;
+    const dateStrings = [...new Set(eps.map(ep => ep.datetime.slice(0, 10)))]
+      .sort((a, b) => new Date(b) - new Date(a));
+    let streak = 1;
+    for (let i = 0; i < dateStrings.length - 1; i++) {
+      const d1 = new Date(dateStrings[i]);
+      const d2 = new Date(dateStrings[i + 1]);
+      const diff = (d1 - d2) / (1000 * 60 * 60 * 24);
+      if (diff === 1) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
+
+  function groupBy(array, keyFn) {
+    return array.reduce((acc, item) => {
+      const key = keyFn(item);
+      acc[key] = acc[key] || [];
+      acc[key].push(item);
+      return acc;
+    }, {});
+  }
+
   (function topTriggersRule() {
     const recent = inLastDays(30);
     if (recent.length === 0) return;
     const triggerCounts = {};
     recent.forEach(ep => {
       (ep.triggers || []).forEach(t => {
-        const key = t.trim().toLowerCase();
-        triggerCounts[key] = (triggerCounts[key] || 0) + 1;
+        triggerCounts[t] = (triggerCounts[t] || 0) + 1;
       });
     });
     const threshold = Math.ceil(recent.length * 0.25);
-    const commonTriggers = Object.entries(triggerCounts)
-      .filter(([, count]) => count >= threshold)
-      .map(([name]) => name);
-    if (commonTriggers.length > 0) {
-      const list = commonTriggers.map(t => capitalize(t)).join(', ');
+    const common = Object.entries(triggerCounts)
+      .filter(([t, count]) => count >= threshold)
+      .map(([t]) => t);
+    if (common.length > 0) {
+      const list = common.map(t => capitalize(t)).join(', ');
       suggestions.push({
         title: 'Frequent triggers',
-        message: `You often report triggers like ${list}. Consider what adjustments might help you avoid or mitigate these.`
+        message: `You often report triggers like ${list}. Gentle adjustments might help you avoid or mitigate these.`
       });
     }
   })();
 
-  // Time‑of‑day cluster: ≥40% episodes within any 4‑hour window in last 30 days
   (function timeOfDayRule() {
     const recent = inLastDays(30);
     if (recent.length === 0) return;
-    // convert times to minutes since midnight
-    const minutes = recent.map(ep => {
-      const d = new Date(ep.datetime);
-      return d.getHours() * 60 + d.getMinutes();
-    });
-    minutes.sort((a, b) => a - b);
+    const minutes = recent
+      .map(ep => {
+        const d = new Date(ep.datetime);
+        return d.getHours() * 60 + d.getMinutes();
+      })
+      .sort((a, b) => a - b);
     const total = minutes.length;
     const threshold = Math.ceil(total * 0.4);
-    // sliding window of 4 hours (240 minutes)
-    let maxCount = 0;
     let windowStartIdx = 0;
+    let maxCount = 0;
     let windowStartTime = 0;
     for (let i = 0; i < minutes.length; i++) {
-      // shrink window while difference > 240
       while (minutes[i] - minutes[windowStartIdx] > 240) {
         windowStartIdx++;
       }
@@ -78,92 +93,179 @@ export function analysePatterns(episodes) {
       }
     }
     if (maxCount >= threshold) {
-      const start = windowStartTime;
-      const end = (start + 240) % (24 * 60);
-      const startStr = formatTime(start);
-      const endStr = formatTime(end);
+      const startHour = Math.floor(windowStartTime / 60);
+      const endHour = Math.floor((windowStartTime + 240) / 60);
+      const pad = n => n.toString().padStart(2, '0');
+      const range = `${pad(startHour)}:00–${pad(endHour)}:00`;
       suggestions.push({
-        title: 'Time‑of‑day pattern',
-        message: `Around ${Math.round((maxCount / total) * 100)}% of your episodes happen between ${startStr} and ${endStr}. You might try adjusting your routine or preparing for triggers during this period.`
+        title: 'Time‑of‑day cluster',
+        message: `A significant share of your episodes occur between ${range}. Consider a pre‑emptive routine or relaxation practice then.`
       });
     }
   })();
 
-  // Day‑of‑week cluster: ≥40% on same weekday
   (function dayOfWeekRule() {
     const recent = inLastDays(30);
     if (recent.length === 0) return;
-    const counts = Array(7).fill(0);
+    const weekdayCounts = {};
     recent.forEach(ep => {
-      const day = new Date(ep.datetime).getDay(); // 0=Sun
-      counts[day]++;
+      const day = new Date(ep.datetime).getDay();
+      weekdayCounts[day] = (weekdayCounts[day] || 0) + 1;
     });
     const total = recent.length;
     const threshold = Math.ceil(total * 0.4);
-    const maxCount = Math.max(...counts);
-    if (maxCount >= threshold) {
-      const dayIndex = counts.indexOf(maxCount);
-      const weekdays = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const maxEntry = Object.entries(weekdayCounts).reduce(
+      (max, entry) => (entry[1] > max[1] ? entry : max),
+      [null, 0]
+    );
+    const day = maxEntry[0];
+    const count = maxEntry[1];
+    if (count >= threshold) {
+      const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       suggestions.push({
-        title: 'Day‑of‑week trend',
-        message: `About ${Math.round((maxCount / total) * 100)}% of recent episodes occur on ${weekdays[dayIndex]}s. There may be something about those days worth investigating.`
+        title: 'Day‑of‑week cluster',
+        message: `About ${Math.round((count / total) * 100)}% of your episodes happen on ${weekdays[day]}. Reflect on factors specific to that day.`
       });
     }
   })();
 
-  // Rising intensity trend: 3‑week moving average up ≥20% vs previous 3 weeks
   (function risingIntensityRule() {
-    // consider last 6 weeks
-    const cutoff = new Date(now);
-    cutoff.setDate(cutoff.getDate() - 42);
-    const recent = episodes.filter(ep => new Date(ep.datetime) >= cutoff);
-    if (recent.length < 2) return;
-    // split into two windows: first 3 weeks and last 3 weeks
-    const midCutoff = new Date(now);
-    midCutoff.setDate(midCutoff.getDate() - 21);
-    const firstWindow = recent.filter(ep => new Date(ep.datetime) < midCutoff);
-    const secondWindow = recent.filter(ep => new Date(ep.datetime) >= midCutoff);
-    if (firstWindow.length === 0 || secondWindow.length === 0) return;
-    const avg1 = firstWindow.reduce((sum, ep) => sum + ep.intensity, 0) / firstWindow.length;
-    const avg2 = secondWindow.reduce((sum, ep) => sum + ep.intensity, 0) / secondWindow.length;
-    if (avg2 >= avg1 * 1.2) {
+    const sixWeeks = inLastDays(42);
+    if (sixWeeks.length < 3) return;
+    const weekGroups = groupBy(sixWeeks, ep => {
+      const d = new Date(ep.datetime);
+      const first = new Date(d.getFullYear(), 0, 1);
+      const dayOffset = (d.getDay() + 6) % 7;
+      const dayOfYear = Math.floor((d - first) / (24 * 60 * 60 * 1000)) + 1;
+      return Math.ceil((dayOfYear - dayOffset) / 7);
+    });
+    const weekNumbers = Object.keys(weekGroups)
+      .map(Number)
+      .sort((a, b) => a - b);
+    if (weekNumbers.length < 6) return;
+    const weeklyAvg = weekNumbers.map(wn => {
+      const eps = weekGroups[wn];
+      const totalIntensity = eps.reduce((sum, ep) => sum + Number(ep.intensity || 0), 0);
+      return totalIntensity / eps.length;
+    });
+    const len = weeklyAvg.length;
+    const last3 = weeklyAvg.slice(len - 3).reduce((a, b) => a + b, 0) / 3;
+    const prev3 = weeklyAvg.slice(len - 6, len - 3).reduce((a, b) => a + b, 0) / 3;
+    if (prev3 > 0 && last3 >= prev3 * 1.2) {
       suggestions.push({
-        title: 'Rising intensity',
-        message: `Your average migraine intensity over the last three weeks (${avg2.toFixed(1)}) is noticeably higher than the preceding three weeks (${avg1.toFixed(1)}). It may be worth discussing this with a healthcare professional.`
+        title: 'Rising intensity trend',
+        message: `Your 3‑week average intensity has risen by over 20%. Consider consulting a healthcare provider or reviewing possible triggers.`
       });
     }
   })();
 
-  // Medication overuse: meds used ≥10 days in last 30
   (function medicationOveruseRule() {
     const recent = inLastDays(30);
-    // gather unique days where any medication taken
-    const daysWithMeds = new Set();
+    const daysWithMed = new Set();
     recent.forEach(ep => {
-      if (Array.isArray(ep.medications) && ep.medications.length > 0) {
-        const date = new Date(ep.datetime).toISOString().slice(0, 10);
-        daysWithMeds.add(date);
+      if ((ep.medications || []).length > 0) {
+        daysWithMed.add(ep.datetime.slice(0, 10));
       }
     });
-    if (daysWithMeds.size >= 10) {
+    if (daysWithMed.size >= 10) {
       suggestions.push({
-        title: 'Medication use',
-        message: `You've taken migraine medication on ${daysWithMeds.size} days in the last month. Overuse can sometimes worsen migraines – consider discussing your medication plan with a doctor.`
+        title: 'Medication usage',
+        message: `You've used medication on ${daysWithMed.size} days in the last month. Over‑use can sometimes worsen migraines; speak with your doctor.`
+      });
+    }
+  })();
+
+  (function averageIntensityByHourRule() {
+    const recent = inLastDays(30);
+    if (recent.length === 0) return;
+    const hourBuckets = {};
+    recent.forEach(ep => {
+      const d = new Date(ep.datetime);
+      const h = d.getHours();
+      if (!hourBuckets[h]) hourBuckets[h] = { sum: 0, count: 0 };
+      hourBuckets[h].sum += Number(ep.intensity || 0);
+      hourBuckets[h].count += 1;
+    });
+    const averages = Object.entries(hourBuckets).map(([h, val]) => ({
+      hour: Number(h),
+      avg: val.sum / val.count,
+      count: val.count
+    }));
+    if (averages.length === 0) return;
+    const maxEntry = averages.reduce((max, entry) => (entry.avg > max.avg ? entry : max), averages[0]);
+    if (maxEntry.avg >= 6 && maxEntry.count >= 3) {
+      const pad = n => String(n).padStart(2, '0');
+      suggestions.push({
+        title: 'Peak intensity hour',
+        message: `Episodes logged around ${pad(maxEntry.hour)}:00 tend to be more intense. Planning rest or adjustments then might help.`
+      });
+    }
+  })();
+
+  (function averageIntensityByWeekdayRule() {
+    const recent = inLastDays(30);
+    if (recent.length === 0) return;
+    const buckets = {};
+    recent.forEach(ep => {
+      const d = new Date(ep.datetime);
+      const wd = d.getDay();
+      if (!buckets[wd]) buckets[wd] = { sum: 0, count: 0 };
+      buckets[wd].sum += Number(ep.intensity || 0);
+      buckets[wd].count += 1;
+    });
+    const avgs = Object.entries(buckets).map(([wd, val]) => ({
+      wd: Number(wd),
+      avg: val.sum / val.count,
+      count: val.count
+    }));
+    if (avgs.length === 0) return;
+    const top = avgs.reduce((max, entry) => (entry.avg > max.avg ? entry : max), avgs[0]);
+    if (top.avg >= 6 && top.count >= 3) {
+      const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      suggestions.push({
+        title: 'Toughest day',
+        message: `Your migraines tend to be most intense on ${weekdays[top.wd]}. Consider easing your schedule on those days.`
+      });
+    }
+  })();
+
+  (function streakRule() {
+    const sortedEpisodes = episodes
+      .slice()
+      .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+    const streak = computeStreak(sortedEpisodes);
+    if (streak >= 3) {
+      suggestions.push({
+        title: 'Consistent tracking',
+        message: `Great job! You've logged episodes for ${streak} consecutive days. Keeping track consistently helps identify patterns.`
+      });
+    }
+  })();
+
+  (function weeklyChangeRule() {
+    const lastWeek = inLastDays(7);
+    const prevCutoff = new Date(now);
+    prevCutoff.setDate(prevCutoff.getDate() - 14);
+    const prevWeekEnd = new Date(now);
+    prevWeekEnd.setDate(prevWeekEnd.getDate() - 7);
+    const prevWeek = episodes.filter(ep => {
+      const d = new Date(ep.datetime);
+      return d >= prevCutoff && d < prevWeekEnd;
+    });
+    const lastCount = lastWeek.length;
+    const prevCount = prevWeek.length;
+    if (prevCount > 0 && lastCount > prevCount) {
+      suggestions.push({
+        title: 'Increased frequency',
+        message: `You logged ${lastCount} episodes in the last week, up from ${prevCount} the week before. Watch for triggers and consider adjustments.`
+      });
+    } else if (prevCount > 0 && lastCount < prevCount) {
+      suggestions.push({
+        title: 'Decreased frequency',
+        message: `Nice progress! You've logged fewer episodes this week (${lastCount}) than the previous week (${prevCount}). Keep it up!`
       });
     }
   })();
 
   return suggestions;
-}
-
-// Helpers
-function capitalize(str) {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-function formatTime(minutes) {
-  const hh = Math.floor(minutes / 60);
-  const mm = minutes % 60;
-  const pad = n => n.toString().padStart(2, '0');
-  return `${pad(hh)}:${pad(mm)}`;
 }
