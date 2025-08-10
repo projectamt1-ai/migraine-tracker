@@ -140,4 +140,16 @@ export function getSettings() {
 
 export function updateSettings(s) {
   saveSettings(s);
+  
+}
+
+// Alias functions for UI expectations
+export function exportEpisodesToJSON() {
+  // Call exportBackupJSON for backwards compatibility
+  return exportBackupJSON();
+}
+
+export function importEpisodesFromJSON(file, options = {}) {
+  // Call importBackupJSON for backwards compatibility
+  return importBackupJSON(file, options);
 }
